@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>YOLO Live Stream</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body { background: #111; color: white; text-align: center; font-family: Arial; }
+        video { border: 2px solid #fff; margin-top: 20px; }
+        button { margin: 10px; padding: 10px 20px; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+<h2>YOLO Realtime Stream</h2>
+
+<button id="startBtn">Start YOLO Stream</button>
+<button id="stopBtn">Stop Stream</button>
+<br>
+
+<video id="video" controls autoplay muted width="640" height="480"></video>
+
+<script>
+const video = document.getElementById("video");
+const hlsUrl = "/hls/stream.m3u8";  // relative path to backend
+
+let hls = null;
+
+// Start stream
+document.getElementById("startBtn").onclick = async () => {
+    await fetch("/start", { method: "POST" });
+
+    if (Hls.isSupported()) {
+        if (hls) {
+            hls.destroy();
+        }
+        hls = new Hls({ lowLatencyMode: true });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play();
+        });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = hlsUrl;
+        video.play();
+    }
+};
+
+// Stop stream
+document.getElementById("stopBtn").onclick = async () => {
+    await fetch("/stop", { method: "POST" });
+    if (hls) {
+        hls.destroy();
+        hls = null;
+    }
+    video.pause();
+    video.src = "";
+};
+</script>
+
+</body>
+</html>

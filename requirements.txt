@@ -1,0 +1,28 @@
+# torch==2.5.1+cu121
+# torchvision==0.20.1+cu121
+# torchaudio==2.5.1+cu121
+# --extra-index-url https://download.pytorch.org/whl/cu121
+
+ultralytics==8.2.50
+opencv-python-headless==4.8.1.78
+numpy==1.26.4
+Pillow==10.0.1
+scipy==1.11.3
+matplotlib==3.7.5
+pandas==2.0.3
+PyYAML==6.0.1
+
+# Database connectivity
+psycopg2-binary==2.9.9
+boto3==1.34.90
+botocore==1.34.90
+
+# GPU monitoring
+nvidia-ml-py==12.535.133
+
+fastapi
+uvicorn[standard]
+Pillow
+flake8
+httpx
+python-multipart
