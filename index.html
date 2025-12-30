@@ -22,39 +22,71 @@
 
 <script>
 const video = document.getElementById("video");
-const hlsUrl = "/hls/stream.m3u8";  // relative path to backend
+const hlsUrl = "/hls/stream.m3u8";
 
 let hls = null;
+let polling = false;
 
-// Start stream
-document.getElementById("startBtn").onclick = async () => {
-    await fetch("/start", { method: "POST" });
+/* ---------------- WAIT FOR PLAYLIST ---------------- */
+async function waitForHLS() {
+    polling = true;
 
+    while (polling) {
+        try {
+            const res = await fetch(hlsUrl, { cache: "no-store" });
+            if (res.ok) {
+                startPlayer();
+                break;
+            }
+        } catch (e) {}
+
+        await new Promise(r => setTimeout(r, 500));
+    }
+}
+
+/* ---------------- START PLAYER ---------------- */
+function startPlayer() {
     if (Hls.isSupported()) {
-        if (hls) {
-            hls.destroy();
-        }
-        hls = new Hls({ lowLatencyMode: true });
+        if (hls) hls.destroy();
+
+        hls = new Hls({
+            lowLatencyMode: true,
+            backBufferLength: 0
+        });
+
         hls.loadSource(hlsUrl);
         hls.attachMedia(video);
+
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
             video.play();
         });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    } 
+    else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = hlsUrl;
         video.play();
     }
+}
+
+/* ---------------- START STREAM ---------------- */
+document.getElementById("startBtn").onclick = async () => {
+    await fetch("/start", { method: "POST" });
+    waitForHLS();   // 👈 IMPORTANT
 };
 
-// Stop stream
+/* ---------------- STOP STREAM ---------------- */
 document.getElementById("stopBtn").onclick = async () => {
+    polling = false;
+
     await fetch("/stop", { method: "POST" });
+
     if (hls) {
         hls.destroy();
         hls = null;
     }
+
     video.pause();
-    video.src = "";
+    video.removeAttribute("src");
+    video.load();
 };
 </script>
 

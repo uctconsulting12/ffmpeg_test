@@ -1,35 +1,36 @@
 import cv2
 import subprocess
 import os
+import time
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 from threading import Thread
-import shutil
-import numpy as np
-
+from queue import Queue, Full, Empty
 from fastapi.middleware.cors import CORSMiddleware
+
+# ---------------- FASTAPI ----------------
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Or specific frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- CONFIG ----------
+# ---------------- CONFIG ----------------
 HLS_DIR = "hls"
 STREAM_NAME = "stream.m3u8"
 VIDEO_SOURCE = "https://ai-search-video.s3.us-east-1.amazonaws.com/ai_search_videos/Vid.mp4"
-# ----------------------------
 
 os.makedirs(HLS_DIR, exist_ok=True)
 
-# Load YOLO on GPU
+# ---------------- YOLO ----------------
 model = YOLO("yolov8n.pt").to("cuda")
 
+# ---------------- VIDEO CAPTURE ----------------
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -37,92 +38,129 @@ width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
 fps    = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
+# ---------------- FRAME QUEUE ----------------
+frame_queue = Queue(maxsize=2)
+
+# ---------------- FFMPEG (LIVE HLS) ----------------
 ffmpeg_cmd = [
     "ffmpeg",
     "-y",
+    "-fflags", "nobuffer",
     "-f", "rawvideo",
-    "-pix_fmt", "rgb24",          # INPUT format
+    "-pix_fmt", "rgb24",
     "-s", f"{width}x{height}",
     "-r", str(fps),
     "-i", "-",
+
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    "-preset", "ultrafast",
     "-tune", "zerolatency",
+    "-profile:v", "baseline",
+    "-level", "3.0",
+    "-pix_fmt", "yuv420p",
+
     "-g", str(fps),
-    "-fflags", "nobuffer",
-    "-flags", "low_delay",
-    "-pix_fmt", "yuv420p",        # OUTPUT format for HLS
+    "-keyint_min", str(fps),
+    "-sc_threshold", "0",
+
     "-f", "hls",
     "-hls_time", "1",
-    "-hls_list_size", "10",
-    "-hls_flags", "delete_segments+append_list+temp_file",
+    "-hls_list_size", "6",
+    "-hls_playlist_type", "event",
+    "-hls_flags", "delete_segments+append_list+independent_segments",
+    "-hls_allow_cache", "0",
+
     os.path.join(HLS_DIR, STREAM_NAME)
 ]
 
 ffmpeg = None
 streaming = False
 
-def yolo_loop():
-    global ffmpeg, streaming
-    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
-    streaming = True
+# ---------------- VIDEO READER (REAL-TIME) ----------------
+def reader_loop():
+    global streaming
+    frame_interval = 1.0 / fps
+
     while streaming:
+        start = time.time()
+
         ret, frame = cap.read()
+
+        # STOP WHEN VIDEO ENDS
         if not ret:
-            print("Video ended or cannot read frame.")
+            streaming = False
             break
 
-        # YOLO inference
+        try:
+            frame_queue.put_nowait(frame)
+        except Full:
+            pass
+
+        elapsed = time.time() - start
+        sleep_time = frame_interval - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+# ---------------- YOLO + FFMPEG ----------------
+def yolo_loop():
+    global ffmpeg, streaming
+
+    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+
+    while streaming or not frame_queue.empty():
+        try:
+            frame = frame_queue.get(timeout=1)
+        except Empty:
+            continue
+
         results = model(frame, device=0, verbose=False)
         for r in results:
             frame = r.plot()
 
-        # Convert BGR -> RGB before sending to FFmpeg
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         try:
             ffmpeg.stdin.write(rgb_frame.tobytes())
         except BrokenPipeError:
-            print("FFmpeg closed. Stopping loop.")
             break
 
-    streaming = False
     if ffmpeg:
         ffmpeg.stdin.close()
         ffmpeg.terminate()
         ffmpeg = None
 
+# ---------------- API ----------------
 @app.post("/start")
 def start_stream():
     global streaming
+
     if not streaming:
+        streaming = True
+        Thread(target=reader_loop, daemon=True).start()
         Thread(target=yolo_loop, daemon=True).start()
-        return {"status": "YOLO streaming started"}
+        return {"status": "YOLO HLS streaming started"}
+
     return {"status": "Already streaming"}
 
 @app.post("/stop")
 def stop_stream():
     global streaming, ffmpeg
+
     streaming = False
+
     if ffmpeg:
         ffmpeg.stdin.close()
         ffmpeg.terminate()
         ffmpeg = None
 
-    # Clear HLS folder
-    if os.path.exists(HLS_DIR):
-        for filename in os.listdir(HLS_DIR):
-            file_path = os.path.join(HLS_DIR, filename)
-            try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
-            except Exception as e:
-                print(f"Failed to delete {file_path}. Reason: {e}")
+    for f in os.listdir(HLS_DIR):
+        try:
+            os.remove(os.path.join(HLS_DIR, f))
+        except:
+            pass
 
-    return {"status": "Streaming stopped and HLS folder cleared"}
+    return {"status": "Streaming stopped"}
 
-# Serve HLS files
+# ---------------- STATIC FILES ----------------
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
-# Serve frontend
 app.mount("/", StaticFiles(directory=".", html=True), name="frontend")
