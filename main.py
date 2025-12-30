@@ -39,7 +39,7 @@ height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
 fps    = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
 # ---------------- FRAME QUEUE ----------------
-frame_queue = Queue(maxsize=2)
+frame_queue = Queue(maxsize=100)
 
 # ---------------- FFMPEG (LIVE HLS) ----------------
 ffmpeg_cmd = [
@@ -65,7 +65,7 @@ ffmpeg_cmd = [
 
     "-f", "hls",
     "-hls_time", "1",
-    "-hls_list_size", "6",
+    "-hls_list_size", "10",
     "-hls_playlist_type", "event",
     "-hls_flags", "delete_segments+append_list+independent_segments",
     "-hls_allow_cache", "0",
