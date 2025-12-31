@@ -17,7 +17,7 @@ services:
     build: .
     container_name: yolo-stream
     environment:
-      - RTSP_URL=rtsp://admin:industry4@192.168.88.100:554/cam/realmonitor?channel=1&subtype=0
+      - RTSP_URL=rtsp://admin:industry4@3.234.239.105:8554/cam/realmonitor?channel=1&subtype=0
       - RTMP_URL=rtmp://mediamtx:1935/stream
 
     depends_on:
