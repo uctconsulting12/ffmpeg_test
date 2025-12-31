@@ -1,12 +1,14 @@
 # Use NVIDIA's PyTorch image with CUDA 12.1
 FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
-# Install OpenCV and system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Set workdir
 WORKDIR /app

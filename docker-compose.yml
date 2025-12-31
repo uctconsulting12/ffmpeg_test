@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx
+    ports:
+      - "1935:1935"   # RTMP
+      - "8888:8888"   # HLS
+      - "8889:8889"   # WebRTC HTTP
+      - "8189:8189"   # WebRTC ICE
+    restart: unless-stopped
+    networks:
+      - yolo-net
+
+  yolo-stream:
+    build: .
+    container_name: yolo-stream
+    environment:
+      - RTSP_URL=rtsp://admin:industry4@192.168.88.100:554/cam/realmonitor?channel=1&subtype=0
+      - RTMP_URL=rtmp://mediamtx:1935/stream
+
+    depends_on:
+      - mediamtx
+    ports:
+      - "9000:9000"   # FastAPI
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    networks:
+      - yolo-net
+
+networks:
+  yolo-net:
+    driver: bridge
+
