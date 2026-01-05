@@ -1,14 +1,15 @@
 import os
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-
 import cv2
 import subprocess
 import time
 from threading import Thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
-import socket
+
+# ---------------- ENV CONFIG ----------------
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
 # ---------------- FASTAPI ----------------
 app = FastAPI()
@@ -26,46 +27,31 @@ RTSP_URL = os.environ.get(
     "rtsp://admin:industry4@192.168.88.100:554/cam/realmonitor?channel=1&subtype=0"
 )
 
-RTMP_HOST = os.environ.get("RTMP_HOST", "mediamtx")
-RTMP_PORT = int(os.environ.get("RTMP_PORT", 1935))
-RTMP_URL = os.environ.get(
-    "RTMP_URL",
-    f"rtmp://{RTMP_HOST}:{RTMP_PORT}/stream"
-)
+# ---------------- HLS CONFIG ----------------
+HLS_DIR = os.environ.get("HLS_DIR", "./hls")
+HLS_PLAYLIST = os.path.join(HLS_DIR, "stream.m3u8")
+os.makedirs(HLS_DIR, exist_ok=True)
 
 # ---------------- YOLO (GPU) ----------------
 model = YOLO("yolov8n.pt").to("cuda")
 streaming = False
 
-# ---------------- UTILS ----------------
-def wait_for_rtmp(host, port, timeout=30):
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            s = socket.socket()
-            s.settimeout(1)
-            s.connect((host, port))
-            s.close()
-            print(f"✅ RTMP server {host}:{port} reachable")
-            return True
-        except Exception:
-            print(f"⏳ Waiting for RTMP server {host}:{port}...")
-            time.sleep(1)
-    print("❌ RTMP server not reachable")
-    return False
+# ---------------- MOUNT HLS ----------------
+app.mount(
+    "/hls",
+    StaticFiles(directory=HLS_DIR, html=False),
+    name="hls"
+)
 
 # ---------------- STREAM LOOP ----------------
 def stream_loop():
     global streaming
 
-    if not wait_for_rtmp(RTMP_HOST, RTMP_PORT):
-        streaming = False
-        return
-
     while streaming:
         cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        # Wait for stream
         wait_count = 0
         while not cap.isOpened() and streaming:
             print(f"⏳ Waiting for RTSP stream... ({wait_count})")
@@ -76,51 +62,66 @@ def stream_loop():
         if not streaming:
             break
 
-        # Get stream properties (fallback if zero)
+        # Stream properties
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
-        fps = cap.get(cv2.CAP_PROP_FPS) or 15
+        fps = round(cap.get(cv2.CAP_PROP_FPS)) or 15
 
         print(f"📷 RTSP Stream: {width}x{height} @ {fps} FPS")
 
-        # FFmpeg command (libx264, safe presets)
+        # ---------------- FFMPEG PIPE ----------------
         ffmpeg_cmd = [
-    "ffmpeg",
-    "-y",
-    "-loglevel", "error",
-    "-f", "rawvideo",
-    "-pix_fmt", "bgr24",
-    "-s", f"{width}x{height}",
-    "-r", str(fps),  # match video fps
-    "-i", "-",
-    "-c:v", "libx264",
-    "-preset", "ultrafast",  # faster encoding
-    "-tune", "zerolatency",
-    "-pix_fmt", "yuv420p",
-    "-g", str(fps),
-    "-f", "flv",
-    RTMP_URL
-]
-
+            "ffmpeg",
+            "-y",
+            "-loglevel", "error",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}",
+            "-r", str(fps),
+            "-i", "-",
+            "-c:v", "h264_nvenc",
+            "-preset", "llhp",
+            "-rc", "vbr_hq",
+            "-b:v", "4M",
+            "-maxrate", "6M",
+            "-bufsize", "8M",
+            "-pix_fmt", "yuv420p",
+            "-fflags", "+genpts",
+            "-err_detect", "ignore_err",
+            "-vsync", "0",
+            "-f", "hls",
+            "-hls_time", "4",
+            "-hls_list_size", "10",
+            "-hls_flags", "delete_segments+append_list",
+            "-hls_segment_filename", f"{HLS_DIR}/seg_%03d.ts",
+            HLS_PLAYLIST
+        ]
 
         ffmpeg_out = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 
+        retry_count = 0
         try:
             while streaming:
                 ret, frame = cap.read()
                 if not ret:
-                    print("⚠️ Frame grab failed, reconnecting...")
-                    break
+                    retry_count += 1
+                    if retry_count > 5:
+                        print("Too many failed frames, reconnecting...")
+                        break
+                    time.sleep(0.1)
+                    continue
+                retry_count = 0
 
-                # YOLO inference
-                results = model(frame, device=0, verbose=False)
+                # YOLO inference (non-blocking if using stream=True)
+                results = model.predict(frame, device=0, verbose=False, batch=16)
                 for r in results:
                     frame = r.plot()
 
+                # Send to FFmpeg
                 try:
                     ffmpeg_out.stdin.write(frame.tobytes())
                 except BrokenPipeError:
-                    print("⚠️ RTMP connection lost, retrying...")
+                    print("⚠️ FFmpeg pipe broken, restarting...")
                     break
 
         except Exception as e:
@@ -130,11 +131,12 @@ def stream_loop():
             cap.release()
             try:
                 ffmpeg_out.stdin.close()
-            except:
+            except Exception:
                 pass
             ffmpeg_out.terminate()
+
             if streaming:
-                print("⏱ Reconnecting in 3 seconds...")
+                print("Reconnecting in 3 seconds...")
                 time.sleep(3)
 
     print("🛑 Stream stopped")
@@ -146,7 +148,7 @@ def start_stream():
     if not streaming:
         streaming = True
         Thread(target=stream_loop, daemon=True).start()
-        return {"status": "RTSP YOLO STREAM STARTED"}
+        return {"status": "RTSP → YOLO → HLS STREAM STARTED"}
     return {"status": "Already streaming"}
 
 @app.post("/stop")

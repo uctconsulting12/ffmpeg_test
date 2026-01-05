@@ -25,4 +25,7 @@ COPY . .
 
 # Expose port and run
 EXPOSE 9000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9000"]
+
+
+# docker run --gpus all -d -p 9000:9000  -v E:\test_with_ffmpeg\hls_out: app/hls_out  --name ffmpeg_container   ffmpeg_image
