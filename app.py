@@ -36,6 +36,7 @@ def stream_worker(stream_id: str, source: str, stop_event: threading.Event,
     out_m3u8 = os.path.join(out_dir, "stream.m3u8")
 
     cap = cv2.VideoCapture(source)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not cap.isOpened():
         # If you want, we can add an FFmpeg-based RTSP reader for better reliability
         return
@@ -44,11 +45,11 @@ def stream_worker(stream_id: str, source: str, stop_event: threading.Event,
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
     fps = cap.get(cv2.CAP_PROP_FPS)
     fps = fps
-
+    print(f"--------------------------------------------{fps}")
     vcodec = "libx264"
     bitrate_k=4000
     hls_time=4
-    hls_list_size=45
+    hls_list_size=100
 
     # Keyframe interval ~2 seconds for HLS
     gop = int(fps * 2)
@@ -68,7 +69,7 @@ def stream_worker(stream_id: str, source: str, stop_event: threading.Event,
 
         "-b:v", f"{bitrate_k}k",
         "-maxrate", f"{int(bitrate_k * 1.1)}k",
-        "-bufsize", f"{bitrate_k * 2}k",
+        "-bufsize", f"{bitrate_k * 3}k",
 
         "-f", "hls",
         "-hls_time", str(hls_time),
@@ -128,19 +129,17 @@ def start_stream(req: StartRequest):
 
 
 @app.post("/streams/stop/{stream_id}")
-def stop_stream(stream_id: str):
+async def stop_stream(stream_id: str):
     if stream_id not in streams:
         raise HTTPException(status_code=404, detail="stream_id not found")
-
+    streams[stream_id]["stop"].wait()
     streams[stream_id]["stop"].set()
 
     
-            
-
     proc = streams[stream_id].get("proc")
     if proc:
         try:
-            proc.terminate()
+           await proc.terminate()
         except Exception:
             pass
 
