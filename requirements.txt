@@ -26,3 +26,4 @@ Pillow
 flake8
 httpx
 python-multipart
+sam3
